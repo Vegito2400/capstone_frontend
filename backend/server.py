@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -6,13 +6,19 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List
+from typing import List, Dict
 import uuid
 from datetime import datetime, timezone
+
+import forensics
+import model_service
 
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB, matches frontend limit
+ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -36,6 +42,27 @@ class StatusCheck(BaseModel):
 
 class StatusCheckCreate(BaseModel):
     client_name: str
+
+
+class Probabilities(BaseModel):
+    authentic: float
+    tampered: float
+    ai_generated: float
+
+
+class AnalysisResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    filename: str
+    prediction: str
+    confidence: float
+    probabilities: Probabilities
+    verificationId: str
+    timestamp: str
+    summary: str
+    features: Dict[str, float]
+
 
 # Add your routes to the router instead of directly to app
 @api_router.get("/")
@@ -65,6 +92,56 @@ async def get_status_checks():
             check['timestamp'] = datetime.fromisoformat(check['timestamp'])
     
     return status_checks
+
+
+@api_router.post("/analyze", response_model=AnalysisResult)
+async def analyze_image(file: UploadFile = File(...)):
+    """
+    Accepts one medical image, runs ELA + forensic feature extraction, and
+    returns an authenticity prediction. Image bytes are processed in memory
+    only and are never written to disk or stored — only the resulting
+    metadata is persisted, matching the "images are not retained" promise
+    shown in the UI.
+    """
+    if file.content_type not in ALLOWED_CONTENT_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported file type. Please upload PNG, JPG or JPEG.")
+
+    file_bytes = await file.read()
+    if len(file_bytes) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="File exceeds the maximum supported size of 25 MB.")
+
+    try:
+        image = forensics.load_image(file_bytes)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not read this file as an image.")
+
+    ela_image = forensics.generate_ela_image(image)
+    features = forensics.compute_forensic_features(image, ela_image)
+    prediction = model_service.predict(image, ela_image, features)
+
+    result = AnalysisResult(
+        filename=file.filename or "upload",
+        prediction=prediction["prediction"],
+        confidence=prediction["confidence"],
+        probabilities=Probabilities(**prediction["probabilities"]),
+        verificationId=f"MT-VER-{uuid.uuid4().hex[:8].upper()}",
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        summary=prediction["summary"],
+        features=features,
+    )
+
+    doc = result.model_dump()
+    await db.analyses.insert_one(doc)
+
+    return result
+
+
+@api_router.get("/analyze/{verification_id}", response_model=AnalysisResult)
+async def get_analysis(verification_id: str):
+    doc = await db.analyses.find_one({"verificationId": verification_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="No analysis found for that verification ID.")
+    return doc
 
 # Include the router in the main app
 app.include_router(api_router)
