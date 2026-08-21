@@ -1,37 +1,34 @@
-// Mock analysis service for local development and testing.
-// Exports a named `analyzeImage(file, onProgress)` function that
-// simulates progress and returns a fake analysis result.
+// Configure VITE_API_BASE_URL for a deployed API. The local default matches
+// the FastAPI server used during development.
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api').replace(/\/$/, '');
 
+/** Sends an image to the API and returns only values used by the results UI. */
 export async function analyzeImage(file, onProgress = () => {}) {
-	const stages = [
-		'Uploading',
-		'Preprocessing',
-		'ELA Analysis',
-		'Dual-ViT Analysis',
-		'Generating Explainability',
-		'Verifying Integrity'
-	];
+	if (!file) throw new Error('Select an image before starting an analysis.');
 
-	for (let i = 0; i < stages.length; i++) {
-		try { onProgress(i, stages[i]); } catch (e) { /* ignore errors from callback */ }
-		// small delay to simulate work
-		// eslint-disable-next-line no-await-in-loop
-		await new Promise((res) => setTimeout(res, 350));
+	onProgress(0, 'Uploading image');
+	const formData = new FormData();
+	formData.append('file', file);
+
+	let response;
+	try {
+		response = await fetch(`${API_BASE_URL}/analyze`, { method: 'POST', body: formData });
+	} catch {
+		throw new Error('Unable to reach the analysis service. Please ensure the backend is running.');
 	}
 
-	const result = {
-		prediction: Math.random() > 0.35 ? 'Authentic' : 'Tampered',
-		confidence: +(0.85 + Math.random() * 0.14).toFixed(2),
-		probabilities: {
-			authentic: +(0.7 + Math.random() * 0.25).toFixed(3),
-			tampered: +(0.05 + Math.random() * 0.15).toFixed(3),
-			ai_generated: +(0.01 + Math.random() * 0.05).toFixed(3),
-		},
-		verificationId: `MT-VER-${Math.floor(1000 + Math.random() * 9000)}`,
-		timestamp: new Date().toISOString(),
-		summary: 'Simulated forensic analysis (local mock). Use the real backend integration for production results.'
-	};
+	const payload = await response.json().catch(() => ({}));
+	if (!response.ok) {
+		const detail = typeof payload.detail === 'string' ? payload.detail : null;
+		throw new Error(detail || `The analysis service returned HTTP ${response.status}.`);
+	}
 
-	return result;
+	const { confidence, probabilities } = payload;
+	if (!Number.isFinite(confidence) || !probabilities || !Number.isFinite(probabilities.fake) || !Number.isFinite(probabilities.real)) {
+		throw new Error('The analysis service returned an invalid result.');
+	}
+
+	onProgress(1, 'Analysis complete');
+	return { confidence, probabilities: { fake: probabilities.fake, real: probabilities.real } };
 }
 

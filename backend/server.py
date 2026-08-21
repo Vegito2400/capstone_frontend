@@ -45,9 +45,8 @@ class StatusCheckCreate(BaseModel):
 
 
 class Probabilities(BaseModel):
-    authentic: float
-    tampered: float
-    ai_generated: float
+    fake: float
+    real: float
 
 
 class AnalysisResult(BaseModel):
@@ -130,8 +129,11 @@ async def analyze_image(file: UploadFile = File(...)):
         features=features,
     )
 
-    doc = result.model_dump()
-    await db.analyses.insert_one(doc)
+    # MongoDB persistence disabled temporarily so the API can be
+    # tested without a MongoDB server running on localhost:27017.
+    #
+    # doc = result.model_dump()
+    # await db.analyses.insert_one(doc)
 
     return result
 
