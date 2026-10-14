@@ -9,13 +9,15 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Dict
 import uuid
 from datetime import datetime, timezone
+import base64
+import io
 
+ROOT_DIR = Path(__file__).resolve().parent
+load_dotenv(ROOT_DIR / ".env")
+
+import ela
 import forensics
 import model_service
-
-
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB, matches frontend limit
 ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
@@ -61,6 +63,7 @@ class AnalysisResult(BaseModel):
     timestamp: str
     summary: str
     features: Dict[str, float]
+    elaImage: str
 
 
 # Add your routes to the router instead of directly to app
@@ -114,9 +117,15 @@ async def analyze_image(file: UploadFile = File(...)):
     except Exception:
         raise HTTPException(status_code=400, detail="Could not read this file as an image.")
 
-    ela_image = forensics.generate_ela_image(image)
+    # Generate the visual ELA map with the dedicated ELA module. The map is
+    # processed and returned in memory only; no uploaded image is retained.
+    ela_image = ela.generate_ela_image(image)
     features = forensics.compute_forensic_features(image, ela_image)
     prediction = model_service.predict(image, ela_image, features)
+
+    ela_buffer = io.BytesIO()
+    ela_image.save(ela_buffer, format="PNG", optimize=True)
+    ela_data_url = "data:image/png;base64," + base64.b64encode(ela_buffer.getvalue()).decode("ascii")
 
     result = AnalysisResult(
         filename=file.filename or "upload",
@@ -127,6 +136,7 @@ async def analyze_image(file: UploadFile = File(...)):
         timestamp=datetime.now(timezone.utc).isoformat(),
         summary=prediction["summary"],
         features=features,
+        elaImage=ela_data_url,
     )
 
     # MongoDB persistence disabled temporarily so the API can be
@@ -166,4 +176,3 @@ logger = logging.getLogger(__name__)
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
-

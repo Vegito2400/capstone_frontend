@@ -23,12 +23,12 @@ export async function analyzeImage(file, onProgress = () => {}) {
 		throw new Error(detail || `The analysis service returned HTTP ${response.status}.`);
 	}
 
-	const { confidence, probabilities } = payload;
+	const { confidence, probabilities, elaImage } = payload;
 	if (!Number.isFinite(confidence) || !probabilities || !Number.isFinite(probabilities.fake) || !Number.isFinite(probabilities.real)) {
 		throw new Error('The analysis service returned an invalid result.');
 	}
 
 	onProgress(1, 'Analysis complete');
-	return { confidence, probabilities: { fake: probabilities.fake, real: probabilities.real } };
+	return { confidence, probabilities: { fake: probabilities.fake, real: probabilities.real }, elaImage };
 }
 
